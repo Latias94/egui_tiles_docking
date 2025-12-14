@@ -281,6 +281,54 @@ impl<Pane> Tree<Pane> {
         })
     }
 
+    /// Extract the given tile and all its descendants into a [`SubTree`], preserving [`TileId`]s, without reserving a disjoint id-range.
+    ///
+    /// This is useful for re-arranging tiles within the same tree, where reserving a large [`TileId`] range would be wasteful.
+    ///
+    /// If you insert the returned subtree into a different tree that may allocate new [`TileId`]s, you must ensure id-ranges don't collide.
+    pub fn extract_subtree_no_reserve(&mut self, root: TileId) -> Option<SubTree<Pane>> {
+        if self.tiles.get(root).is_none() {
+            return None;
+        }
+
+        // Remove the tile id from its parent (or clear root).
+        if self.root == Some(root) {
+            self.root = None;
+        } else {
+            self.remove_tile_id_from_parent(root);
+        }
+
+        // Collect all ids first (we need to inspect container children before removing tiles).
+        let mut stack = vec![root];
+        let mut ids = Vec::new();
+        while let Some(tile_id) = stack.pop() {
+            ids.push(tile_id);
+            if let Some(Tile::Container(container)) = self.tiles.get(tile_id) {
+                stack.extend(container.children().copied());
+            }
+        }
+
+        let mut extracted_tiles = Tiles::default();
+        extracted_tiles.set_next_tile_id(self.tiles.next_tile_id());
+
+        for tile_id in ids {
+            let visible = self.tiles.is_visible(tile_id);
+
+            // Remove from the source invisible set regardless of whether the tile exists.
+            self.tiles.set_visible(tile_id, true);
+
+            if let Some(tile) = self.tiles.remove(tile_id) {
+                extracted_tiles.insert(tile_id, tile);
+                extracted_tiles.set_visible(tile_id, visible);
+            }
+        }
+
+        Some(SubTree {
+            root,
+            tiles: extracted_tiles,
+        })
+    }
+
     fn remove_recursively_impl(&mut self, id: TileId, removed_tiles: &mut Vec<Tile<Pane>>) {
         // We can safely use the raw `tiles.remove` API here because either the parent was cleaned
         // up explicitly from `remove_recursively` or the parent is also being removed so there's
@@ -746,7 +794,14 @@ impl<Pane> Tree<Pane> {
                 behavior.drag_ui(&self.tiles, ui, dragged_tile_id);
             });
 
-        if let Some(preview_rect) = drop_context.preview_rect {
+        let disable_drop_preview = ui.ctx().data(|d| {
+            d.get_temp::<bool>(disable_drop_preview_id(self.id))
+                .unwrap_or(false)
+        });
+
+        if disable_drop_preview {
+            clear_smooth_preview_rect(ui.ctx(), dragged_tile_id);
+        } else if let Some(preview_rect) = drop_context.preview_rect {
             let preview_rect = smooth_preview_rect(ui.ctx(), dragged_tile_id, preview_rect);
 
             let parent_rect = drop_context
@@ -1020,6 +1075,10 @@ impl<Pane> Tree<Pane> {
 /// and so that a user could re-create the [`Tree`] each frame and still get smooth previews.
 fn smooth_preview_rect_id(dragged_tile_id: TileId) -> egui::Id {
     egui::Id::new((dragged_tile_id, "smoothed_preview_rect"))
+}
+
+fn disable_drop_preview_id(tree_id: egui::Id) -> egui::Id {
+    egui::Id::new((tree_id, "egui_docking_disable_drop_preview"))
 }
 
 fn clear_smooth_preview_rect(ctx: &egui::Context, dragged_tile_id: TileId) {
