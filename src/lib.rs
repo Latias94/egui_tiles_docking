@@ -222,11 +222,14 @@ pub enum ResizeState {
 
 // ----------------------------------------------------------------------------
 
-/// An insertion point in a specific container.
+/// An insertion point within a specific container layout.
 ///
-/// Specifies the expected container layout type, and where to insert.
+/// This is useful for programmatic docking and for bridging external drag sources
+/// (e.g. native multi-window) back into an `egui_tiles` tree.
+///
+/// The `usize` is the insertion index within the container's children list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ContainerInsertion {
+pub enum ContainerInsertion {
     Tabs(usize),
     Horizontal(usize),
     Vertical(usize),
@@ -235,7 +238,7 @@ enum ContainerInsertion {
 
 impl ContainerInsertion {
     /// Where in the parent (in what order among its children).
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         match self {
             Self::Tabs(index)
             | Self::Horizontal(index)
@@ -244,7 +247,7 @@ impl ContainerInsertion {
         }
     }
 
-    fn kind(self) -> ContainerKind {
+    pub fn kind(self) -> ContainerKind {
         match self {
             Self::Tabs(_) => ContainerKind::Tabs,
             Self::Horizontal(_) => ContainerKind::Horizontal,
@@ -255,8 +258,8 @@ impl ContainerInsertion {
 }
 
 /// Where in the tree to insert a tile.
-#[derive(Clone, Copy, Debug)]
-struct InsertionPoint {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InsertionPoint {
     pub parent_id: TileId,
 
     /// Where in the parent?
@@ -270,6 +273,22 @@ impl InsertionPoint {
             insertion,
         }
     }
+}
+
+/// A candidate docking zone (preview rect + insertion target).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DockZone {
+    pub insertion_point: InsertionPoint,
+    pub preview_rect: Rect,
+}
+
+/// A detached subtree from a [`Tree`], preserving [`TileId`]s.
+///
+/// Use [`Tree::extract_subtree`] to create one, and [`Tree::insert_subtree_at`] to insert it into another tree.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubTree<Pane> {
+    pub root: TileId,
+    pub tiles: Tiles<Pane>,
 }
 
 #[derive(PartialEq, Eq)]

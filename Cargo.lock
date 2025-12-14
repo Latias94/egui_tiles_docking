@@ -617,7 +617,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_tiles"
+name = "egui_tiles_docking"
 version = "0.14.0"
 dependencies = [
  "ahash",

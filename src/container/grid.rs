@@ -83,6 +83,29 @@ impl Grid {
         self.children().count()
     }
 
+    /// The rectangles of each grid cell, as computed during the layout pass.
+    ///
+    /// Returns `(index, rect)` where `index` matches the `ContainerInsertion::Grid(index)` used
+    /// by the internal drag-and-drop implementation.
+    ///
+    /// Returns an empty vector if layout hasn't been run yet.
+    pub(crate) fn cell_rects(&self) -> Vec<(usize, Rect)> {
+        let cols = self.col_ranges.len();
+        let rows = self.row_ranges.len();
+        if cols == 0 || rows == 0 {
+            return Vec::new();
+        }
+
+        let mut out = Vec::with_capacity(cols * rows);
+        for i in 0..(cols * rows) {
+            let col = i % cols;
+            let row = i / cols;
+            let rect = Rect::from_x_y_ranges(self.col_ranges[col], self.row_ranges[row]);
+            out.push((i, rect));
+        }
+        out
+    }
+
     /// Includes invisible children.
     pub fn children(&self) -> impl Iterator<Item = &TileId> {
         self.children.iter().filter_map(|c| c.as_ref())

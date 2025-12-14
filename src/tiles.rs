@@ -59,6 +59,14 @@ impl<Pane> Default for Tiles<Pane> {
 // ----------------------------------------------------------------------------
 
 impl<Pane> Tiles<Pane> {
+    pub(crate) fn set_next_tile_id(&mut self, next_tile_id: u64) {
+        self.next_tile_id = next_tile_id;
+    }
+
+    pub(crate) fn next_tile_id(&self) -> u64 {
+        self.next_tile_id
+    }
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
@@ -336,6 +344,24 @@ impl<Pane> Tiles<Pane> {
                 }
             }
         }
+    }
+
+    pub(crate) fn merge_in(&mut self, other: Tiles<Pane>) -> Result<(), TileId> {
+        let Tiles {
+            next_tile_id,
+            tiles,
+            invisible,
+            rects: _,
+        } = other;
+
+        if let Some(colliding) = tiles.keys().find(|id| self.tiles.contains_key(id)).copied() {
+            return Err(colliding);
+        }
+
+        self.tiles.extend(tiles);
+        self.invisible.extend(invisible);
+        self.next_tile_id = self.next_tile_id.max(next_tile_id);
+        Ok(())
     }
 
     /// Detect cycles, duplications, and other invalid state, and fix it.

@@ -1,7 +1,7 @@
-use egui::{NumExt as _, Rect, Ui};
+use egui::{NumExt as _, Pos2, Rect, Ui};
 
 use crate::behavior::EditAction;
-use crate::{ContainerInsertion, ContainerKind, UiResponse};
+use crate::{ContainerInsertion, ContainerKind, DockZone, SubTree, UiResponse};
 
 use super::{
     Behavior, Container, DropContext, InsertionPoint, SimplificationOptions, SimplifyAction, Tile,
@@ -223,6 +223,64 @@ impl<Pane> Tree<Pane> {
         removed_tiles
     }
 
+    /// Extract the given tile and all its descendants into a [`SubTree`], preserving [`TileId`]s.
+    ///
+    /// This also removes the tile id from its parent's list of children (or clears [`Self::root`] if removing root).
+    ///
+    /// To avoid future [`TileId`] collisions between the original tree and the returned subtree (if they both keep
+    /// allocating new tiles independently), this will reserve a large id-range for the subtree and bump the original
+    /// tree's internal id counter accordingly.
+    pub fn extract_subtree(&mut self, root: TileId) -> Option<SubTree<Pane>> {
+        const DETACHED_TILE_ID_CHUNK: u64 = 1u64 << 32;
+
+        if self.tiles.get(root).is_none() {
+            return None;
+        }
+
+        // Reserve a disjoint id range for the detached tree:
+        let reserved_start = self.tiles.next_tile_id();
+        let reserved_root_next = reserved_start.saturating_add(DETACHED_TILE_ID_CHUNK);
+        self.tiles
+            .set_next_tile_id(self.tiles.next_tile_id().max(reserved_root_next));
+
+        // Remove the tile id from its parent (or clear root).
+        if self.root == Some(root) {
+            self.root = None;
+        } else {
+            self.remove_tile_id_from_parent(root);
+        }
+
+        // Collect all ids first (we need to inspect container children before removing tiles).
+        let mut stack = vec![root];
+        let mut ids = Vec::new();
+        while let Some(tile_id) = stack.pop() {
+            ids.push(tile_id);
+            if let Some(Tile::Container(container)) = self.tiles.get(tile_id) {
+                stack.extend(container.children().copied());
+            }
+        }
+
+        let mut extracted_tiles = Tiles::default();
+        extracted_tiles.set_next_tile_id(reserved_start);
+
+        for tile_id in ids {
+            let visible = self.tiles.is_visible(tile_id);
+
+            // Remove from the source invisible set regardless of whether the tile exists.
+            self.tiles.set_visible(tile_id, true);
+
+            if let Some(tile) = self.tiles.remove(tile_id) {
+                extracted_tiles.insert(tile_id, tile);
+                extracted_tiles.set_visible(tile_id, visible);
+            }
+        }
+
+        Some(SubTree {
+            root,
+            tiles: extracted_tiles,
+        })
+    }
+
     fn remove_recursively_impl(&mut self, id: TileId, removed_tiles: &mut Vec<Tile<Pane>>) {
         // We can safely use the raw `tiles.remove` API here because either the parent was cleaned
         // up explicitly from `remove_recursively` or the parent is also being removed so there's
@@ -336,6 +394,236 @@ impl<Pane> Tree<Pane> {
 
         self.preview_dragged_tile(behavior, &drop_context, ui);
         ui.advance_cursor_after_rect(rect);
+    }
+
+    /// Find the closest docking zone for the given pointer position.
+    ///
+    /// This uses the same "closest-to-center" heuristic as the built-in drag-and-drop logic.
+    ///
+    /// Note: this relies on rectangles computed during [`Self::ui`], so call that first each frame.
+    pub fn dock_zone_at(
+        &self,
+        behavior: &dyn Behavior<Pane>,
+        style: &egui::Style,
+        pointer_pos: Pos2,
+    ) -> Option<DockZone> {
+        let mut best: Option<DockZone> = None;
+        let mut best_dist_sq = f32::INFINITY;
+
+        let tab_bar_height = behavior.tab_bar_height(style).at_least(0.0);
+
+        let mut suggest = |insertion_point: InsertionPoint, preview_rect: Rect| {
+            let dist_sq = pointer_pos.distance_sq(preview_rect.center());
+            if dist_sq < best_dist_sq {
+                best_dist_sq = dist_sq;
+                best = Some(DockZone {
+                    insertion_point,
+                    preview_rect,
+                });
+            }
+        };
+
+        for tile_id in self.active_tiles() {
+            let Some(rect) = self.tiles.rect(tile_id) else {
+                continue;
+            };
+            let Some(tile) = self.tiles.get(tile_id) else {
+                continue;
+            };
+
+            let kind = tile.kind();
+
+            // --- Generic suggestions (same as `DropContext::on_tile`):
+            if kind != Some(ContainerKind::Horizontal) {
+                let (left, right) = rect.split_left_right_at_fraction(0.5);
+                suggest(
+                    InsertionPoint::new(tile_id, ContainerInsertion::Horizontal(0)),
+                    left,
+                );
+                suggest(
+                    InsertionPoint::new(tile_id, ContainerInsertion::Horizontal(usize::MAX)),
+                    right,
+                );
+            }
+
+            if kind != Some(ContainerKind::Vertical) {
+                let (top, bottom) = rect.split_top_bottom_at_fraction(0.5);
+                suggest(
+                    InsertionPoint::new(tile_id, ContainerInsertion::Vertical(0)),
+                    top,
+                );
+                suggest(
+                    InsertionPoint::new(tile_id, ContainerInsertion::Vertical(usize::MAX)),
+                    bottom,
+                );
+            }
+
+            let tab_y = (rect.top() + tab_bar_height).at_most(rect.bottom());
+            let (tab_bar_rect, content_rect) = rect.split_top_bottom_at_y(tab_y);
+
+            // For existing tab containers, make it easy to drop onto the tab bar.
+            if kind == Some(ContainerKind::Tabs) {
+                suggest(
+                    InsertionPoint::new(tile_id, ContainerInsertion::Tabs(usize::MAX)),
+                    tab_bar_rect,
+                );
+            }
+            suggest(
+                InsertionPoint::new(tile_id, ContainerInsertion::Tabs(usize::MAX)),
+                content_rect,
+            );
+
+            // --- Container-specific suggestions:
+            match tile {
+                Tile::Container(Container::Linear(linear)) => {
+                    let preview_thickness = 12.0;
+
+                    let after_rect = |rect: Rect| match linear.dir {
+                        crate::LinearDir::Horizontal => Rect::from_min_max(
+                            rect.right_top() - egui::vec2(preview_thickness, 0.0),
+                            rect.right_bottom(),
+                        ),
+                        crate::LinearDir::Vertical => Rect::from_min_max(
+                            rect.left_bottom() - egui::vec2(0.0, preview_thickness),
+                            rect.right_bottom(),
+                        ),
+                    };
+
+                    let before_rect = |rect: Rect| match linear.dir {
+                        crate::LinearDir::Horizontal => Rect::from_min_max(
+                            rect.left_top(),
+                            rect.left_bottom() + egui::vec2(preview_thickness, 0.0),
+                        ),
+                        crate::LinearDir::Vertical => Rect::from_min_max(
+                            rect.left_top(),
+                            rect.right_top() + egui::vec2(0.0, preview_thickness),
+                        ),
+                    };
+
+                    let between_rects = |a: Rect, b: Rect| match linear.dir {
+                        crate::LinearDir::Horizontal => Rect::from_center_size(
+                            a.right_center().lerp(b.left_center(), 0.5),
+                            egui::vec2(preview_thickness, a.height()),
+                        ),
+                        crate::LinearDir::Vertical => Rect::from_center_size(
+                            a.center_bottom().lerp(b.center_top(), 0.5),
+                            egui::vec2(a.width(), preview_thickness),
+                        ),
+                    };
+
+                    let mut prev_rect: Option<Rect> = None;
+                    for (i, &child) in linear.children.iter().enumerate() {
+                        let Some(child_rect) = self.tiles.rect(child) else {
+                            continue; // skip invisible child
+                        };
+
+                        let insertion = match linear.dir {
+                            crate::LinearDir::Horizontal => ContainerInsertion::Horizontal(i),
+                            crate::LinearDir::Vertical => ContainerInsertion::Vertical(i),
+                        };
+
+                        if let Some(prev_rect) = prev_rect {
+                            suggest(
+                                InsertionPoint::new(tile_id, insertion),
+                                between_rects(prev_rect, child_rect),
+                            );
+                        } else {
+                            // Suggest dropping before the first visible child:
+                            suggest(
+                                InsertionPoint::new(
+                                    tile_id,
+                                    match linear.dir {
+                                        crate::LinearDir::Horizontal => {
+                                            ContainerInsertion::Horizontal(0)
+                                        }
+                                        crate::LinearDir::Vertical => {
+                                            ContainerInsertion::Vertical(0)
+                                        }
+                                    },
+                                ),
+                                before_rect(child_rect),
+                            );
+                        }
+
+                        prev_rect = Some(child_rect);
+                    }
+
+                    if let Some(last_rect) = prev_rect {
+                        // Suggest dropping after the last visible child:
+                        let insertion = match linear.dir {
+                            crate::LinearDir::Horizontal => {
+                                ContainerInsertion::Horizontal(linear.children.len())
+                            }
+                            crate::LinearDir::Vertical => {
+                                ContainerInsertion::Vertical(linear.children.len())
+                            }
+                        };
+                        suggest(
+                            InsertionPoint::new(tile_id, insertion),
+                            after_rect(last_rect),
+                        );
+                    }
+                }
+
+                Tile::Container(Container::Grid(grid)) => {
+                    for (i, cell_rect) in grid.cell_rects() {
+                        suggest(
+                            InsertionPoint::new(tile_id, ContainerInsertion::Grid(i)),
+                            cell_rect,
+                        );
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        best
+    }
+
+    /// Insert an existing tile id into the tree at the given insertion point.
+    ///
+    /// This mirrors the behavior of the internal drag-and-drop implementation, including
+    /// wrapping a non-container target in a new container if needed.
+    ///
+    /// The tile itself must already exist in [`Self::tiles`].
+    pub fn insert_existing_tile_at(
+        &mut self,
+        inserted_id: TileId,
+        insertion_point: InsertionPoint,
+    ) {
+        self.tiles.insert_at(insertion_point, inserted_id);
+    }
+
+    /// Insert a previously extracted [`SubTree`] into this tree.
+    ///
+    /// If this tree is empty, the subtree becomes the new root.
+    /// Otherwise the subtree's root tile is inserted at the provided insertion point (or as a new tab in the current root).
+    pub fn insert_subtree_at(
+        &mut self,
+        subtree: SubTree<Pane>,
+        insertion_point: Option<InsertionPoint>,
+    ) {
+        let SubTree { root, tiles } = subtree;
+
+        if let Err(colliding) = self.tiles.merge_in(tiles) {
+            log::warn!(
+                "Failed to insert subtree: tile id collision at {colliding:?}. \
+                 Ensure the subtree does not share TileIds with the destination tree."
+            );
+            return;
+        }
+
+        let Some(current_root) = self.root else {
+            self.root = Some(root);
+            return;
+        };
+
+        let insertion_point = insertion_point.unwrap_or_else(|| {
+            InsertionPoint::new(current_root, ContainerInsertion::Tabs(usize::MAX))
+        });
+
+        self.insert_existing_tile_at(root, insertion_point);
     }
 
     /// Sets the exact height that can be used by the tree.
@@ -655,6 +943,25 @@ impl<Pane> Tree<Pane> {
                 continue; // not allowed to drag root
             }
 
+            let is_tile_being_dragged = crate::is_being_dragged(ctx, self.id, tile_id);
+            if is_tile_being_dragged {
+                // Abort drags on escape:
+                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    ctx.stop_dragging();
+                    return None;
+                }
+
+                return Some(tile_id);
+            }
+        }
+        None
+    }
+
+    /// Find the currently dragged tile, including the root tile.
+    ///
+    /// This is useful for integrations where the "root tile" is still a draggable unit (e.g. multi-viewport tear-off).
+    pub fn dragged_id_including_root(&self, ctx: &egui::Context) -> Option<TileId> {
+        for tile_id in self.tiles.tile_ids() {
             let is_tile_being_dragged = crate::is_being_dragged(ctx, self.id, tile_id);
             if is_tile_being_dragged {
                 // Abort drags on escape:

@@ -1,14 +1,23 @@
-# `egui_tiles`
+# `egui_tiles_docking`
 
-[<img alt="github" src="https://img.shields.io/badge/github-rerun_io/egui_tiles-8da0cb?logo=github" height="20">](https://github.com/rerun-io/egui_tiles)
-[![Latest version](https://img.shields.io/crates/v/egui_tiles.svg)](https://crates.io/crates/egui_tiles)
-[![Documentation](https://docs.rs/egui_tiles/badge.svg)](https://docs.rs/egui_tiles)
+[<img alt="github" src="https://img.shields.io/badge/github-Latias94/egui__tiles__docking-8da0cb?logo=github" height="20">](https://github.com/Latias94/egui_tiles_docking)
+[![Latest version](https://img.shields.io/crates/v/egui_tiles_docking.svg)](https://crates.io/crates/egui_tiles_docking)
+[![Documentation](https://docs.rs/egui_tiles_docking/badge.svg)](https://docs.rs/egui_tiles_docking)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
-[![Build Status](https://github.com/rerun-io/egui_tiles/workflows/Rust/badge.svg)](https://github.com/rerun-io/egui_tiles/actions?workflow=Rust)
-[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/rerun-io/egui_tiles/blob/master/LICENSE-MIT)
-[![Apache](https://img.shields.io/badge/license-Apache-blue.svg)](https://github.com/rerun-io/egui_tiles/blob/master/LICENSE-APACHE)
+[![Build Status](https://github.com/Latias94/egui_tiles_docking/actions/workflows/rust.yml/badge.svg)](https://github.com/Latias94/egui_tiles_docking/actions/workflows/rust.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Latias94/egui_tiles_docking/blob/main/LICENSE-MIT)
+[![Apache](https://img.shields.io/badge/license-Apache-blue.svg)](https://github.com/Latias94/egui_tiles_docking/blob/main/LICENSE-APACHE)
 
-Layouting and docking for [egui](https://github.com/rerun-io/egui).
+This is a fork of [`rerun-io/egui_tiles`](https://github.com/rerun-io/egui_tiles) with a few additional public APIs,
+primarily to support bridging docking models to native multi-window ("multi-viewport") workflows.
+
+Layouting and docking for [egui](https://github.com/emilk/egui).
+
+## Usage
+To use this fork as a drop-in replacement for `egui_tiles`:
+```toml
+egui_tiles = { package = "egui_tiles_docking", version = "0.14" }
+```
 
 Supports:
 * Horizontal and vertical layouts
@@ -33,6 +42,6 @@ Supports:
 <div align="center">
 <img src="https://user-images.githubusercontent.com/1148717/236840584-f4795fb3-89e3-40ac-b570-ac2869e6e8fa.png" width="50%">
 
-`egui_tiles` development is sponsored by [Rerun](https://www.rerun.io/), a startup doing<br>
+Upstream `egui_tiles` development is sponsored by [Rerun](https://www.rerun.io/), a startup doing<br>
 visualizations for computer vision and robotics.
 </div>
