@@ -369,12 +369,19 @@ impl<Pane> Tiles<Pane> {
     /// Will also call [`Behavior::retain_pane`] to check if a users wants to remove a pane.
     ///
     /// Finally free up any tiles that are no longer reachable from the root.
-    pub(super) fn gc_root(&mut self, behavior: &mut dyn Behavior<Pane>, root_id: Option<TileId>) {
+    /// Returns `true` if the root tile was removed (e.g. if the root is a pane and
+    /// [`Behavior::retain_pane`] returned `false`, or if a cycle/duplication was detected at root).
+    pub(super) fn gc_root(
+        &mut self,
+        behavior: &mut dyn Behavior<Pane>,
+        root_id: Option<TileId>,
+    ) -> bool {
         let mut visited = Default::default();
+        let mut root_removed = false;
 
         if let Some(root_id) = root_id {
-            // We ignore the returned root action, because we will never remove the root.
-            let _root_action = self.gc_tile_id(behavior, &mut visited, root_id);
+            let root_action = self.gc_tile_id(behavior, &mut visited, root_id);
+            root_removed = root_action == GcAction::Remove;
         }
 
         if visited.len() < self.tiles.len() {
@@ -392,6 +399,8 @@ impl<Pane> Tiles<Pane> {
 
         self.invisible.retain(|tile_id| visited.contains(tile_id));
         self.tiles.retain(|tile_id, _| visited.contains(tile_id));
+
+        root_removed
     }
 
     /// Detect cycles, duplications, and other invalid state, and remove them.
@@ -465,6 +474,12 @@ impl<Pane> Tiles<Pane> {
         if let Tile::Container(container) = &mut tile {
             let kind = container.kind();
             container.simplify_children(|child| self.simplify(options, child, Some(kind)));
+
+            if let Container::Tabs(tabs) = container {
+                // Simplification can remove or replace children; keep `active` consistent so we
+                // never end up with `active` pointing to a missing/non-child tile.
+                tabs.ensure_active(self);
+            }
 
             if kind == ContainerKind::Tabs {
                 if options.prune_empty_tabs && container.is_empty() {

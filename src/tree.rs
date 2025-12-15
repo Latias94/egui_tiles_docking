@@ -1013,7 +1013,9 @@ impl<Pane> Tree<Pane> {
     ///
     /// This is also called by [`Self::ui`], so usually you don't need to call this yourself.
     pub fn gc(&mut self, behavior: &mut dyn Behavior<Pane>) {
-        self.tiles.gc_root(behavior, self.root);
+        if self.tiles.gc_root(behavior, self.root) {
+            self.root = None;
+        }
     }
 
     /// Move a tile to a new container, at the specified insertion index.
