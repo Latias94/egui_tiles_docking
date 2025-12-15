@@ -316,12 +316,24 @@ fn cover_tile_if_dragged<Pane>(
     ui: &egui::Ui,
     tile_id: TileId,
 ) {
+    let disable_dragged_overlay = ui.ctx().data(|d| {
+        d.get_temp::<bool>(disable_dragged_overlay_id(tree.id))
+            .unwrap_or(false)
+    });
+    if disable_dragged_overlay {
+        return;
+    }
+
     if is_being_dragged(ui.ctx(), tree.id, tile_id) {
         if let Some(child_rect) = tree.tiles.rect(tile_id) {
             let overlay_color = behavior.dragged_overlay_color(ui.visuals());
             ui.painter().rect_filled(child_rect, 0.0, overlay_color);
         }
     }
+}
+
+fn disable_dragged_overlay_id(tree_id: egui::Id) -> egui::Id {
+    egui::Id::new((tree_id, "egui_docking_disable_dragged_overlay"))
 }
 
 // ----------------------------------------------------------------------------
