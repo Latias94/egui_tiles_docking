@@ -411,6 +411,21 @@ impl<Pane> Tree<Pane> {
     ///
     /// The tree will use upp all the available space - nothing more, nothing less.
     pub fn ui(&mut self, behavior: &mut dyn Behavior<Pane>, ui: &mut Ui) {
+        let viewport_id = ui.ctx().viewport_id();
+        let debug_visit_enabled = ui.ctx().data(|d| {
+            d.get_temp::<bool>(debug_visit_enabled_id(self.id, viewport_id))
+                .unwrap_or(false)
+        });
+        if debug_visit_enabled {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(debug_visit_accum_id(self.id, viewport_id), Vec::<String>::new());
+                d.insert_temp(
+                    debug_visit_counts_id(self.id, viewport_id),
+                    std::collections::HashMap::<TileId, u32>::new(),
+                );
+            });
+        }
+
         self.simplify(&behavior.simplification_options());
 
         self.gc(behavior);
@@ -438,6 +453,49 @@ impl<Pane> Tree<Pane> {
             self.tiles.layout_tile(ui.style(), behavior, rect, root);
 
             self.tile_ui(behavior, &mut drop_context, ui, root);
+        }
+
+        if debug_visit_enabled {
+            let lines = ui.ctx().data(|d| {
+                d.get_temp::<Vec<String>>(debug_visit_accum_id(self.id, viewport_id))
+                    .unwrap_or_default()
+            });
+            let counts = ui.ctx().data(|d| {
+                d.get_temp::<std::collections::HashMap<TileId, u32>>(debug_visit_counts_id(
+                    self.id,
+                    viewport_id,
+                ))
+                .unwrap_or_default()
+            });
+            let mut duplicates: Vec<(TileId, u32)> = counts
+                .into_iter()
+                .filter(|(_id, c)| *c > 1)
+                .collect();
+            duplicates.sort_by_key(|(id, _c)| id.0);
+            let root = self.root;
+            let dup_text = if duplicates.is_empty() {
+                "duplicates: none".to_owned()
+            } else {
+                format!(
+                    "duplicates: {}",
+                    duplicates
+                        .into_iter()
+                        .map(|(id, c)| format!("{id:?}x{c}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            let text = if lines.is_empty() {
+                format!("tiles_ui viewport={viewport_id:?} root={root:?}\n{dup_text}\n(visited: none)")
+            } else {
+                format!(
+                    "tiles_ui viewport={viewport_id:?} root={root:?}\n{dup_text}\n{}",
+                    lines.join("\n")
+                )
+            };
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(debug_visit_last_id(self.id, viewport_id), text);
+            });
         }
 
         self.preview_dragged_tile(behavior, &drop_context, ui);
@@ -739,11 +797,79 @@ impl<Pane> Tree<Pane> {
         ui.add_enabled_ui(enabled, |ui| {
             match &mut tile {
                 Tile::Pane(pane) => {
+                    let viewport_id = ui.ctx().viewport_id();
+                    let debug_visit_enabled = ui.ctx().data(|d| {
+                        d.get_temp::<bool>(debug_visit_enabled_id(self.id, viewport_id))
+                            .unwrap_or(false)
+                    });
+                    if debug_visit_enabled {
+                        let w = rect.width();
+                        let h = rect.height();
+                        let visible = self.is_visible(tile_id);
+                        ui.ctx().data_mut(|d| {
+                            let dup = {
+                                let counts: &mut std::collections::HashMap<TileId, u32> = d
+                                    .get_temp_mut_or(
+                                        debug_visit_counts_id(self.id, viewport_id),
+                                        std::collections::HashMap::<TileId, u32>::new(),
+                                    );
+                                let entry = counts.entry(tile_id).or_insert(0);
+                                *entry = entry.saturating_add(1);
+                                *entry > 1
+                            };
+                            let lines: &mut Vec<String> = d.get_temp_mut_or(
+                                debug_visit_accum_id(self.id, viewport_id),
+                                Vec::<String>::new(),
+                            );
+                            lines.push(format!(
+                                "tile={tile_id:?} kind=Pane visible={visible} rect=({:.1},{:.1},{:.1},{:.1}){}",
+                                rect.min.x, rect.min.y, w, h,
+                                if dup { " DUP" } else { "" }
+                            ));
+                        });
+                    }
                     if behavior.pane_ui(ui, tile_id, pane) == UiResponse::DragStarted {
                         ui.ctx().set_dragged_id(tile_id.egui_id(self.id));
                     }
                 }
                 Tile::Container(container) => {
+                    let viewport_id = ui.ctx().viewport_id();
+                    let debug_visit_enabled = ui.ctx().data(|d| {
+                        d.get_temp::<bool>(debug_visit_enabled_id(self.id, viewport_id))
+                            .unwrap_or(false)
+                    });
+                    if debug_visit_enabled {
+                        let w = rect.width();
+                        let h = rect.height();
+                        let visible = self.is_visible(tile_id);
+                        let kind = container.kind();
+                        let children: Vec<TileId> = container.children().copied().collect();
+                        let extra = match container {
+                            crate::Container::Tabs(tabs) => format!(" active={:?}", tabs.active),
+                            _ => String::new(),
+                        };
+                        ui.ctx().data_mut(|d| {
+                            let dup = {
+                                let counts: &mut std::collections::HashMap<TileId, u32> = d
+                                    .get_temp_mut_or(
+                                        debug_visit_counts_id(self.id, viewport_id),
+                                        std::collections::HashMap::<TileId, u32>::new(),
+                                    );
+                                let entry = counts.entry(tile_id).or_insert(0);
+                                *entry = entry.saturating_add(1);
+                                *entry > 1
+                            };
+                            let lines: &mut Vec<String> = d.get_temp_mut_or(
+                                debug_visit_accum_id(self.id, viewport_id),
+                                Vec::<String>::new(),
+                            );
+                            lines.push(format!(
+                                "tile={tile_id:?} kind=Container({kind:?}) visible={visible} rect=({:.1},{:.1},{:.1},{:.1}) children={children:?}{extra}{}",
+                                rect.min.x, rect.min.y, w, h,
+                                if dup { " DUP" } else { "" }
+                            ));
+                        });
+                    }
                     container.ui(self, behavior, drop_context, ui, rect, tile_id);
                 }
             };
@@ -798,6 +924,9 @@ impl<Pane> Tree<Pane> {
             d.get_temp::<bool>(disable_drop_preview_id(self.id))
                 .unwrap_or(false)
         });
+        let disable_drop_apply = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(disable_drop_apply_id(self.id)).unwrap_or(false));
 
         if disable_drop_preview {
             clear_smooth_preview_rect(ui.ctx(), dragged_tile_id);
@@ -828,8 +957,21 @@ impl<Pane> Tree<Pane> {
 
         if ui.input(|i| i.pointer.any_released()) {
             if let Some(insertion_point) = drop_context.best_insertion {
-                behavior.on_edit(EditAction::TileDropped);
-                self.move_tile(dragged_tile_id, insertion_point, false);
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        last_drop_release_debug_id(self.id),
+                        format!(
+                            "tiles_release dragged={dragged_tile_id:?} insertion={insertion_point:?} disable_preview={disable_drop_preview} disable_apply={disable_drop_apply} did_apply={}",
+                            !disable_drop_apply
+                        ),
+                    );
+                });
+            }
+            if !disable_drop_apply {
+                if let Some(insertion_point) = drop_context.best_insertion {
+                    behavior.on_edit(EditAction::TileDropped);
+                    self.move_tile(dragged_tile_id, insertion_point, false);
+                }
             }
             clear_smooth_preview_rect(ui.ctx(), dragged_tile_id);
         }
@@ -927,7 +1069,7 @@ impl<Pane> Tree<Pane> {
     /// Move the given tile to the given insertion point.
     ///
     /// See [`Self::move_tile_to_container()`] for details on `reflow_grid`.
-    pub(super) fn move_tile(
+    pub fn move_tile(
         &mut self,
         moved_tile_id: TileId,
         insertion_point: InsertionPoint,
@@ -1079,6 +1221,30 @@ fn smooth_preview_rect_id(dragged_tile_id: TileId) -> egui::Id {
 
 fn disable_drop_preview_id(tree_id: egui::Id) -> egui::Id {
     egui::Id::new((tree_id, "egui_docking_disable_drop_preview"))
+}
+
+fn disable_drop_apply_id(tree_id: egui::Id) -> egui::Id {
+    egui::Id::new((tree_id, "egui_docking_disable_drop_apply"))
+}
+
+fn debug_visit_enabled_id(tree_id: egui::Id, viewport_id: egui::ViewportId) -> egui::Id {
+    egui::Id::new((tree_id, viewport_id, "egui_docking_debug_visit_enabled"))
+}
+
+fn debug_visit_accum_id(tree_id: egui::Id, viewport_id: egui::ViewportId) -> egui::Id {
+    egui::Id::new((tree_id, viewport_id, "egui_docking_debug_visit_accum"))
+}
+
+fn debug_visit_counts_id(tree_id: egui::Id, viewport_id: egui::ViewportId) -> egui::Id {
+    egui::Id::new((tree_id, viewport_id, "egui_docking_debug_visit_counts"))
+}
+
+fn debug_visit_last_id(tree_id: egui::Id, viewport_id: egui::ViewportId) -> egui::Id {
+    egui::Id::new((tree_id, viewport_id, "egui_docking_debug_visit_last"))
+}
+
+fn last_drop_release_debug_id(tree_id: egui::Id) -> egui::Id {
+    egui::Id::new((tree_id, "egui_docking_last_drop_release_debug"))
 }
 
 fn clear_smooth_preview_rect(ctx: &egui::Context, dragged_tile_id: TileId) {
