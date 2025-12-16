@@ -1,9 +1,9 @@
 use egui::{NumExt as _, Rect, Vec2, scroll_area::ScrollBarVisibility, vec2};
 
-use crate::behavior::{EditAction, TabState};
+use crate::behavior::{EditAction, TabState, tab_close_requested_id};
 use crate::{
-    Behavior, ContainerInsertion, DropContext, InsertionPoint, SimplifyAction, TileId, Tiles, Tree,
-    is_being_dragged,
+    Behavior, ContainerInsertion, DropContext, InsertionPoint, SimplifyAction, Tile, TileId, Tiles,
+    Tree, is_being_dragged,
 };
 
 /// Fixed size icons for `⏴` and `⏵`
@@ -50,6 +50,74 @@ struct ScrollState {
 
     /// Did we show the right scroll-arrow last frame?
     pub showed_right_arrow_prev: bool,
+}
+
+/// Tracks hover time on a tab during an active drag to allow delayed auto-selection (ImGui-like).
+#[derive(Clone, Copy, Debug, Default)]
+struct DragHoverSwitch {
+    hovered: Option<TileId>,
+    seconds: f32,
+}
+
+impl DragHoverSwitch {
+    fn reset(&mut self) {
+        self.hovered = None;
+        self.seconds = 0.0;
+    }
+
+    fn update(&mut self, hovered: Option<TileId>, dt: f32) {
+        if hovered.is_none() {
+            self.reset();
+            return;
+        }
+
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            self.seconds = dt.min(10.0);
+        } else {
+            self.seconds = (self.seconds + dt).min(10.0);
+        }
+    }
+
+    fn ready_target(self, active: Option<TileId>, delay_seconds: f32) -> Option<TileId> {
+        if !(delay_seconds.is_finite() && delay_seconds > 0.0) {
+            return None;
+        }
+        let hovered = self.hovered?;
+        (Some(hovered) != active && self.seconds >= delay_seconds).then_some(hovered)
+    }
+}
+
+#[cfg(test)]
+mod drag_hover_switch_tests {
+    use super::*;
+
+    #[test]
+    fn switches_after_delay_and_resets_on_change() {
+        let a = TileId::from_u64(1);
+        let b = TileId::from_u64(2);
+
+        let mut s = DragHoverSwitch::default();
+        let delay = 0.15;
+
+        // Hover A for less than delay: no switch.
+        s.update(Some(a), 0.10);
+        assert_eq!(s.ready_target(Some(b), delay), None);
+
+        // Cross the threshold: switch.
+        s.update(Some(a), 0.06);
+        assert_eq!(s.ready_target(Some(b), delay), Some(a));
+
+        // Change hovered tab: timer resets.
+        s.update(Some(b), 0.14);
+        assert_eq!(s.ready_target(Some(a), delay), None);
+        s.update(Some(b), 0.02);
+        assert_eq!(s.ready_target(Some(a), delay), Some(b));
+
+        // No hovered tab: reset.
+        s.update(None, 0.10);
+        assert_eq!(s.ready_target(Some(a), delay), None);
+    }
 }
 
 impl ScrollState {
@@ -211,7 +279,7 @@ impl Tabs {
     /// Returns the next active tab (e.g. the one clicked, or the current).
     #[allow(clippy::too_many_lines)]
     fn tab_bar_ui<Pane>(
-        &self,
+        &mut self,
         tree: &mut Tree<Pane>,
         behavior: &mut dyn Behavior<Pane>,
         ui: &mut egui::Ui,
@@ -220,6 +288,7 @@ impl Tabs {
         tile_id: TileId,
     ) -> Option<TileId> {
         let mut next_active = self.active;
+        let mut close_requested: Option<TileId> = None;
 
         let tab_bar_height = behavior.tab_bar_height(ui.style());
         let tab_bar_rect = rect.split_top_bottom_at_y(rect.top() + tab_bar_height).0;
@@ -233,6 +302,7 @@ impl Tabs {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let scroll_state_id = ui.make_persistent_id(tile_id);
+            let drag_hover_switch_id = scroll_state_id.with("drag_hover_switch");
             let mut scroll_state = ui.ctx().memory_mut(|m| {
                 m.data
                     .get_temp::<ScrollState>(scroll_state_id)
@@ -267,6 +337,7 @@ impl Tabs {
                         .auto_shrink([false; 2])
                         .horizontal_scroll_offset(scroll_state.offset);
 
+                    let mut hovered_tab_during_drag: Option<TileId> = None;
                     let output = scroll_area.show(ui, |ui| {
                         // Make the background behind the buttons draggable (to drag the parent container tile).
                         // We also sense clicks to avoid eager-dragging on mouse-down.
@@ -300,6 +371,16 @@ impl Tabs {
                             let response =
                                 behavior.tab_ui(&mut tree.tiles, ui, id, child_id, &tab_state);
 
+                            let requested = ui.ctx().data(|d| {
+                                d.get_temp::<bool>(tab_close_requested_id(id))
+                                    .unwrap_or(false)
+                            });
+                            if requested {
+                                close_requested = Some(child_id);
+                                ui.ctx()
+                                    .data_mut(|d| d.insert_temp(tab_close_requested_id(id), false));
+                            }
+
                             if response.clicked() {
                                 behavior.on_edit(EditAction::TabSelected);
                                 next_active = Some(child_id);
@@ -309,13 +390,12 @@ impl Tabs {
                                 if drop_context.dragged_tile_id.is_some()
                                     && response.rect.contains(mouse_pos)
                                 {
-                                    // Expand this tab - maybe the user wants to drop something into it!
-                                    behavior.on_edit(EditAction::TabSelected);
-                                    next_active = Some(child_id);
+                                    hovered_tab_during_drag = Some(child_id);
                                 }
                             }
 
                             button_rects.insert(child_id, response.rect);
+                            tree.tiles.tab_rects.insert(child_id, response.rect);
                             if is_being_dragged {
                                 dragged_index = Some(i);
                             }
@@ -325,12 +405,66 @@ impl Tabs {
                     scroll_state.offset = output.state.offset.x;
                     scroll_state.content_size = output.content_size;
                     scroll_state.available = output.inner_rect.size();
+
+                    // ImGui-like: during an active drag, only auto-select a tab after a short hover delay.
+                    let dt = ui.input(|i| i.stable_dt).min(0.1);
+                    let delay = behavior.tab_switch_on_drag_hover_delay();
+                    let mut hover_switch = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<DragHoverSwitch>(drag_hover_switch_id))
+                        .unwrap_or_default();
+
+                    if drop_context.dragged_tile_id.is_some() {
+                        hover_switch.update(hovered_tab_during_drag, dt);
+                        if let Some(target) = hover_switch.ready_target(self.active, delay) {
+                            behavior.on_edit(EditAction::TabSelected);
+                            next_active = Some(target);
+                            hover_switch.seconds = 0.0;
+                        }
+                    } else {
+                        hover_switch.reset();
+                    }
+
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(drag_hover_switch_id, hover_switch));
                 },
             );
 
             ui.ctx()
                 .data_mut(|data| data.insert_temp(scroll_state_id, scroll_state));
         });
+
+        if let Some(tile_id) = close_requested {
+            if behavior.on_tab_close(&mut tree.tiles, tile_id) {
+                // NOTE: during `Tree::tile_ui`, container tiles are typically moved out of `tree.tiles`
+                // temporarily, so calling `tree.remove_recursively` here may fail to update the parent
+                // container. We therefore remove the subtree directly from `tree.tiles` and update
+                // `self.children` explicitly.
+                fn remove_subtree_from_tiles<Pane>(tiles: &mut Tiles<Pane>, root: TileId) {
+                    let mut stack = vec![root];
+                    while let Some(tile_id) = stack.pop() {
+                        // Clean up visibility bookkeeping even if the tile is already gone:
+                        tiles.set_visible(tile_id, true);
+
+                        let Some(tile) = tiles.remove(tile_id) else {
+                            continue;
+                        };
+                        if let Tile::Container(container) = tile {
+                            stack.extend(container.children().copied());
+                        }
+                    }
+                }
+
+                remove_subtree_from_tiles(&mut tree.tiles, tile_id);
+                self.children.retain(|&id| id != tile_id);
+                if self.active == Some(tile_id) {
+                    self.active = None;
+                }
+                self.ensure_active(&tree.tiles);
+                ui.ctx().request_repaint();
+            }
+            return self.active;
+        }
 
         // -----------
         // Drop zones:

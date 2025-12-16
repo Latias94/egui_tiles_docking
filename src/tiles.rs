@@ -31,6 +31,14 @@ pub struct Tiles<Pane> {
     /// Filled in by the layout step at the start of each frame.
     #[cfg_attr(feature = "serde", serde(default, skip))]
     pub(super) rects: ahash::HashMap<TileId, Rect>,
+
+    /// Filled in during the UI pass for tabs containers: rects of individual tab buttons.
+    ///
+    /// This is transient state (like [`Self::rects`]) and is primarily used for:
+    /// - better docking previews (tab insertion index) for external/cross-host drops
+    /// - ImGui-like tab insertion behavior
+    #[cfg_attr(feature = "serde", serde(default, skip))]
+    pub(super) tab_rects: ahash::HashMap<TileId, Rect>,
 }
 
 impl<Pane: PartialEq> PartialEq for Tiles<Pane> {
@@ -39,7 +47,8 @@ impl<Pane: PartialEq> PartialEq for Tiles<Pane> {
             next_tile_id: _, // ignored
             tiles,
             invisible,
-            rects: _, // ignore transient state
+            rects: _,     // ignore transient state
+            tab_rects: _, // ignore transient state
         } = self;
         tiles == &other.tiles && invisible == &other.invisible
     }
@@ -52,6 +61,7 @@ impl<Pane> Default for Tiles<Pane> {
             tiles: Default::default(),
             invisible: Default::default(),
             rects: Default::default(),
+            tab_rects: Default::default(),
         }
     }
 }
@@ -352,6 +362,7 @@ impl<Pane> Tiles<Pane> {
             tiles,
             invisible,
             rects: _,
+            tab_rects: _,
         } = other;
 
         if let Some(colliding) = tiles.keys().find(|id| self.tiles.contains_key(id)).copied() {

@@ -431,6 +431,7 @@ impl<Pane> Tree<Pane> {
         self.gc(behavior);
 
         self.tiles.rects.clear();
+        self.tiles.tab_rects.clear();
 
         // Check if anything is being dragged:
         let mut drop_context = DropContext {
@@ -539,6 +540,58 @@ impl<Pane> Tree<Pane> {
 
             let kind = tile.kind();
 
+            let tab_y = (rect.top() + tab_bar_height).at_most(rect.bottom());
+            let (tab_bar_rect, content_rect) = rect.split_top_bottom_at_y(tab_y);
+
+            // ImGui-like behavior: when hovering a tab bar, prefer inserting as a tab
+            // (including a stable insertion index) over implicit split suggestions.
+            if kind == Some(ContainerKind::Tabs) && tab_bar_rect.contains(pointer_pos) {
+                if let Tile::Container(Container::Tabs(tabs)) = tile {
+                    let mut prev_visible_rect: Option<Rect> = None;
+                    let mut next_visible_rect: Option<Rect> = None;
+                    let mut insertion_index = tabs.children.len();
+
+                    for (i, &child) in tabs.children.iter().enumerate() {
+                        if !self.is_visible(child) {
+                            continue;
+                        }
+                        let Some(tab_rect) = self.tiles.tab_rects.get(&child).copied() else {
+                            continue;
+                        };
+
+                        if next_visible_rect.is_none() && pointer_pos.x < tab_rect.center().x {
+                            insertion_index = i;
+                            next_visible_rect = Some(tab_rect);
+                            break;
+                        }
+                        prev_visible_rect = Some(tab_rect);
+                    }
+
+                    if next_visible_rect.is_none() {
+                        insertion_index = tabs.children.len();
+                    }
+
+                    // If we have no per-tab rects yet (e.g. first frame), fall back to the whole bar.
+                    let preview_rect = if prev_visible_rect.is_some() || next_visible_rect.is_some()
+                    {
+                        let preview_thickness = 8.0;
+                        Rect::from_center_size(
+                            egui::pos2(pointer_pos.x, tab_bar_rect.center().y),
+                            egui::vec2(preview_thickness, tab_bar_rect.height()),
+                        )
+                        .intersect(tab_bar_rect)
+                    } else {
+                        tab_bar_rect
+                    };
+
+                    suggest(
+                        InsertionPoint::new(tile_id, ContainerInsertion::Tabs(insertion_index)),
+                        preview_rect,
+                    );
+                    continue;
+                }
+            }
+
             // --- Generic suggestions (same as `DropContext::on_tile`):
             if kind != Some(ContainerKind::Horizontal) {
                 let (left, right) = rect.split_left_right_at_fraction(0.5);
@@ -563,9 +616,6 @@ impl<Pane> Tree<Pane> {
                     bottom,
                 );
             }
-
-            let tab_y = (rect.top() + tab_bar_height).at_most(rect.bottom());
-            let (tab_bar_rect, content_rect) = rect.split_top_bottom_at_y(tab_y);
 
             // For existing tab containers, make it easy to drop onto the tab bar.
             if kind == Some(ContainerKind::Tabs) {
@@ -1283,4 +1333,85 @@ fn smooth_preview_rect(ctx: &egui::Context, dragged_tile_id: TileId, new_rect: R
     }
 
     smoothed
+}
+
+#[cfg(test)]
+mod dock_zone_tab_insertion_tests {
+    use super::*;
+
+    struct TestBehavior;
+
+    impl crate::Behavior<()> for TestBehavior {
+        fn pane_ui(&mut self, _ui: &mut egui::Ui, _tile_id: TileId, _pane: &mut ()) -> UiResponse {
+            UiResponse::None
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
+            "".into()
+        }
+    }
+
+    #[test]
+    fn dock_zone_at_tabs_uses_pointer_x_for_insertion_index() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(());
+        let b = tiles.insert_pane(());
+        let c = tiles.insert_pane(());
+        let root = tiles.insert_tab_tile(vec![a, b, c]);
+
+        let mut tree = Tree::new("test_tree", root, tiles);
+
+        // Minimal layout: root rect + active pane rect.
+        let style = egui::Style::default();
+        let behavior = TestBehavior;
+        let tab_bar_h = behavior.tab_bar_height(&style);
+
+        let root_rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(300.0, 200.0));
+        tree.tiles.rects.insert(root, root_rect);
+        tree.tiles.rects.insert(
+            a,
+            Rect::from_min_max(
+                egui::pos2(root_rect.left(), root_rect.top() + tab_bar_h),
+                root_rect.right_bottom(),
+            ),
+        );
+
+        // Per-tab button rects in the tab bar.
+        tree.tiles.tab_rects.insert(
+            a,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(80.0, tab_bar_h)),
+        );
+        tree.tiles.tab_rects.insert(
+            b,
+            Rect::from_min_max(egui::pos2(80.0, 0.0), egui::pos2(160.0, tab_bar_h)),
+        );
+        tree.tiles.tab_rects.insert(
+            c,
+            Rect::from_min_max(egui::pos2(160.0, 0.0), egui::pos2(240.0, tab_bar_h)),
+        );
+
+        let zone_left = tree
+            .dock_zone_at(&behavior, &style, egui::pos2(10.0, 10.0))
+            .unwrap();
+        assert_eq!(
+            zone_left.insertion_point,
+            InsertionPoint::new(root, ContainerInsertion::Tabs(0))
+        );
+
+        let zone_mid = tree
+            .dock_zone_at(&behavior, &style, egui::pos2(100.0, 10.0))
+            .unwrap();
+        assert_eq!(
+            zone_mid.insertion_point,
+            InsertionPoint::new(root, ContainerInsertion::Tabs(1))
+        );
+
+        let zone_right = tree
+            .dock_zone_at(&behavior, &style, egui::pos2(290.0, 10.0))
+            .unwrap();
+        assert_eq!(
+            zone_right.insertion_point,
+            InsertionPoint::new(root, ContainerInsertion::Tabs(3))
+        );
+    }
 }

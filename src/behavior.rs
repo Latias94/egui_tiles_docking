@@ -5,6 +5,10 @@ use egui::{
 
 use super::{ResizeState, SimplificationOptions, Tile, TileId, Tiles, UiResponse};
 
+pub(crate) fn tab_close_requested_id(tab_id: Id) -> Id {
+    tab_id.with("egui_tiles_close_requested")
+}
+
 /// The kind of edit that triggered the call to [`Behavior::on_edit`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditAction {
@@ -63,6 +67,25 @@ pub trait Behavior<Pane> {
         true
     }
 
+    /// Should the close button be shown for this tab?
+    ///
+    /// Dear ImGui commonly shows close buttons on hover and/or on the active tab.
+    fn show_tab_close_button(&self, state: &TabState, tab_hovered: bool) -> bool {
+        state.closable && (state.active || tab_hovered)
+    }
+
+    /// If true, middle-clicking a tab will request closing it (ImGui-like).
+    fn close_tab_on_middle_click(&self) -> bool {
+        false
+    }
+
+    /// How long the pointer must hover a tab during an active drag before we auto-select it.
+    ///
+    /// Dear ImGui style default: `style.HoverDelayShort` (~0.15s).
+    fn tab_switch_on_drag_hover_delay(&self) -> f32 {
+        0.15
+    }
+
     /// The size of the close button in the tab.
     fn close_button_outer_size(&self) -> f32 {
         12.0
@@ -119,8 +142,25 @@ pub trait Behavior<Pane> {
             + f32::from(state.closable) * (close_btn_left_padding + close_btn_size.x);
         let (_, tab_rect) = ui.allocate_space(vec2(button_width, ui.available_height()));
 
+        // Determine whether to show the close button.
+        let show_close_btn = self.show_tab_close_button(state, ui.rect_contains_pointer(tab_rect));
+
+        // IMPORTANT: make the close button reliably clickable by excluding it from the main tab
+        // interaction rect, otherwise the tab's click/drag response may capture the click.
+        let close_btn_rect = show_close_btn.then(|| {
+            egui::Align2::RIGHT_CENTER
+                .align_size_within_rect(close_btn_size, tab_rect.shrink(x_margin))
+        });
+        let tab_interact_rect = if let Some(close_btn_rect) = close_btn_rect {
+            let mut r = tab_rect;
+            r.max.x = (close_btn_rect.left() - close_btn_left_padding).min(r.max.x);
+            r
+        } else {
+            tab_rect
+        };
+
         let tab_response = ui
-            .interact(tab_rect, id, Sense::click_and_drag())
+            .interact(tab_interact_rect, id, Sense::click_and_drag())
             .on_hover_cursor(self.tab_hover_cursor_icon());
 
         // Show a gap when dragged
@@ -153,15 +193,18 @@ pub trait Behavior<Pane> {
             // Render the title
             ui.painter().galley(text_position, galley, text_color);
 
-            // Conditionally render the close button
-            if state.closable {
-                let close_btn_rect = egui::Align2::RIGHT_CENTER
-                    .align_size_within_rect(close_btn_size, tab_rect.shrink(x_margin));
+            // Conditionally render the close button (request-only; actual closing is handled by the container).
+            let request_close = self.close_tab_on_middle_click()
+                && tab_response.hovered()
+                && tab_response.clicked_by(egui::PointerButton::Middle);
 
-                // Allocate
-                let close_btn_id = ui.auto_id_with("tab_close_btn");
+            if show_close_btn {
+                let close_btn_rect = close_btn_rect.expect("close rect set when close button is shown");
+
+                // Allocate: must be stable and unique per tab, otherwise clicks may go to the wrong tab.
+                let close_btn_id = id.with("tab_close_btn");
                 let close_btn_response = ui
-                    .interact(close_btn_rect, close_btn_id, Sense::click_and_drag())
+                    .interact(close_btn_rect, close_btn_id, Sense::click())
                     .on_hover_cursor(egui::CursorIcon::Default);
 
                 let visuals = ui.style().interact(&close_btn_response);
@@ -178,20 +221,14 @@ pub trait Behavior<Pane> {
                 ui.painter() // paints /
                     .line_segment([rect.right_top(), rect.left_bottom()], stroke);
 
-                // Give the user a chance to react to the close button being clicked
-                // Only close if the user returns true (handled)
-                if close_btn_response.clicked() {
-                    log::debug!("Tab close requested for tile: {tile_id:?}");
-
-                    // Close the tab if the implementation wants to
-                    if self.on_tab_close(tiles, tile_id) {
-                        log::debug!("Implementation confirmed close request for tile: {tile_id:?}");
-
-                        tiles.remove(tile_id);
-                    } else {
-                        log::debug!("Implementation denied close request for tile: {tile_id:?}");
-                    }
+                let request_close = request_close || close_btn_response.clicked();
+                if request_close {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(tab_close_requested_id(id), true));
                 }
+            } else if request_close {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(tab_close_requested_id(id), true));
             }
         }
 
