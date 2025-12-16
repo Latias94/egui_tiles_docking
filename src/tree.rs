@@ -532,16 +532,16 @@ impl<Pane> Tree<Pane> {
 
         // ImGui parity: docking targets are "dock nodes" (leaf tab stacks), not arbitrary containers.
         //
-        // Restrict the hovered tile candidates to:
-        // - Tabs containers (preferred leaf unit)
+        // We restrict docking candidates to:
+        // - Tabs containers (preferred dock node unit)
         // - Pane tiles only when they have no parent Tabs wrapper.
+        //
+        // NOTE: do *not* require the pointer to be inside the tile rect. We want "nearest zone"
+        // semantics (like internal `DropContext`), which is important when hovering near splitters.
         for tile_id in self.active_tiles() {
             let Some(rect) = self.tiles.rect(tile_id) else {
                 continue;
             };
-            if !rect.contains(pointer_pos) {
-                continue;
-            }
             let Some(tile) = self.tiles.get(tile_id) else {
                 continue;
             };
@@ -853,7 +853,7 @@ impl<Pane> Tree<Pane> {
             // Can't drag a tile onto self or any children
             drop_context.enabled = false;
         }
-        drop_context.on_tile(behavior, ui.style(), tile_id, rect, &tile);
+        drop_context.on_tile(self, behavior, ui.style(), tile_id, rect, &tile);
 
         // Each tile gets its own `Ui`, nested inside each other, with proper clip rectangles.
         let enabled = ui.is_enabled();
@@ -1476,5 +1476,59 @@ mod dock_zone_tab_insertion_tests {
         let zone = tree.dock_zone_at(&behavior, &style, pointer).unwrap();
         assert_eq!(zone.insertion_point.parent_id, a_tabs);
         assert_eq!(zone.insertion_point.insertion.kind(), ContainerKind::Tabs);
+    }
+}
+
+#[cfg(test)]
+mod tabs_merge_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct DummyBehavior;
+
+    impl crate::Behavior<()> for DummyBehavior {
+        fn pane_ui(&mut self, _ui: &mut egui::Ui, _tile_id: TileId, _pane: &mut ()) -> UiResponse {
+            UiResponse::None
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
+            "pane".into()
+        }
+    }
+
+    #[test]
+    fn moving_tabs_container_into_tabs_merges_children_instead_of_nesting() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(());
+        let b = tiles.insert_pane(());
+
+        let tabs_a = tiles.insert_tab_tile(vec![a]);
+        let tabs_b = tiles.insert_tab_tile(vec![b]);
+        let root = tiles.insert_horizontal_tile(vec![tabs_a, tabs_b]);
+
+        let mut tree = Tree::new("merge_tabs_test", root, tiles);
+
+        // Move the whole Tabs(B) dock node into Tabs(A) as a tab.
+        tree.move_tile(tabs_b, InsertionPoint::new(tabs_a, ContainerInsertion::Tabs(usize::MAX)), true);
+
+        // Normalize.
+        tree.simplify(&crate::SimplificationOptions {
+            all_panes_must_have_tabs: true,
+            ..Default::default()
+        });
+        tree.gc(&mut DummyBehavior::default());
+
+        let Tile::Container(Container::Tabs(tabs)) = tree.tiles.get(tabs_a).unwrap() else {
+            panic!("tabs_a must remain a Tabs container");
+        };
+        assert!(
+            tabs.children.contains(&a) && tabs.children.contains(&b),
+            "tabs_a must contain both panes after merge, got {:?}",
+            tabs.children
+        );
+        assert!(
+            !tree.tiles.tile_ids().any(|id| id == tabs_b),
+            "source tabs container should be removed after merge"
+        );
     }
 }

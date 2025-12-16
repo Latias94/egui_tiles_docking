@@ -355,9 +355,10 @@ struct DropContext {
 impl DropContext {
     fn on_tile<Pane>(
         &mut self,
+        tree: &Tree<Pane>,
         behavior: &dyn Behavior<Pane>,
         style: &egui::Style,
-        parent_id: TileId,
+        tile_id: TileId,
         rect: Rect,
         tile: &Tile<Pane>,
     ) {
@@ -365,25 +366,51 @@ impl DropContext {
             return;
         }
 
-        if tile.kind() != Some(ContainerKind::Horizontal) {
+        // ImGui parity: the "dock node" is a leaf tab stack (Tabs). A Pane tile inside a Tabs
+        // container should forward drop suggestions to the parent Tabs node, so a split affects
+        // the whole dock node instead of turning a single tab into a split container.
+        let (dock_node_id, dock_node_rect, dock_node_tile) = if matches!(tile, Tile::Pane(_)) {
+            tree.tiles
+                .parent_of(tile_id)
+                .filter(|&p| tree.tiles.get(p).and_then(|t| t.kind()) == Some(ContainerKind::Tabs))
+                .and_then(|parent_tabs| {
+                    let parent_rect = tree.tiles.rect(parent_tabs)?;
+                    let parent_tile = tree.tiles.get(parent_tabs)?;
+                    Some((parent_tabs, parent_rect, parent_tile))
+                })
+                .unwrap_or((tile_id, rect, tile))
+        } else {
+            (tile_id, rect, tile)
+        };
+
+        // Only leaf dock nodes participate in drop targeting:
+        // - Tabs stacks
+        // - (rare) panes without a Tabs wrapper
+        if !matches!(dock_node_tile, Tile::Pane(_))
+            && dock_node_tile.kind() != Some(ContainerKind::Tabs)
+        {
+            return;
+        }
+
+        if dock_node_tile.kind() != Some(ContainerKind::Horizontal) {
             self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Horizontal(0)),
-                rect.split_left_right_at_fraction(0.5).0,
+                InsertionPoint::new(dock_node_id, ContainerInsertion::Horizontal(0)),
+                dock_node_rect.split_left_right_at_fraction(0.5).0,
             );
             self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Horizontal(usize::MAX)),
-                rect.split_left_right_at_fraction(0.5).1,
+                InsertionPoint::new(dock_node_id, ContainerInsertion::Horizontal(usize::MAX)),
+                dock_node_rect.split_left_right_at_fraction(0.5).1,
             );
         }
 
-        if tile.kind() != Some(ContainerKind::Vertical) {
+        if dock_node_tile.kind() != Some(ContainerKind::Vertical) {
             self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Vertical(0)),
-                rect.split_top_bottom_at_fraction(0.5).0,
+                InsertionPoint::new(dock_node_id, ContainerInsertion::Vertical(0)),
+                dock_node_rect.split_top_bottom_at_fraction(0.5).0,
             );
             self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Vertical(usize::MAX)),
-                rect.split_top_bottom_at_fraction(0.5).1,
+                InsertionPoint::new(dock_node_id, ContainerInsertion::Vertical(usize::MAX)),
+                dock_node_rect.split_top_bottom_at_fraction(0.5).1,
             );
         }
 
@@ -392,12 +419,13 @@ impl DropContext {
         // We only offer the Tabs suggestion for:
         // - existing Tabs containers, or
         // - Pane tiles (when there is no Tabs wrapper).
-        let is_tabs = tile.kind() == Some(ContainerKind::Tabs);
-        let is_pane = matches!(tile, Tile::Pane(_));
+        let is_tabs = dock_node_tile.kind() == Some(ContainerKind::Tabs);
+        let is_pane = matches!(dock_node_tile, Tile::Pane(_));
         if is_tabs || is_pane {
             self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Tabs(usize::MAX)),
-                rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style))
+                InsertionPoint::new(dock_node_id, ContainerInsertion::Tabs(usize::MAX)),
+                dock_node_rect
+                    .split_top_bottom_at_y(dock_node_rect.top() + behavior.tab_bar_height(style))
                     .1,
             );
         }

@@ -279,6 +279,43 @@ impl<Pane> Tiles<Pane> {
         self.parent_of(tile_id).is_none()
     }
 
+    fn merge_tabs_tile_into_tabs_container(
+        &mut self,
+        tabs: &mut Tabs,
+        insertion_index: usize,
+        inserted_id: TileId,
+    ) -> bool {
+        let is_tabs_tile = matches!(
+            self.tiles.get(&inserted_id),
+            Some(Tile::Container(Container::Tabs(_)))
+        );
+        if !is_tabs_tile {
+            return false;
+        }
+
+        let Some(Tile::Container(Container::Tabs(inserted_tabs))) = self.tiles.remove(&inserted_id) else {
+            return false;
+        };
+
+        self.invisible.remove(&inserted_id);
+
+        let mut at = insertion_index.min(tabs.children.len());
+        for child in inserted_tabs.children.iter().copied() {
+            tabs.children.insert(at, child);
+            at += 1;
+        }
+
+        let active = inserted_tabs
+            .active
+            .filter(|a| inserted_tabs.children.contains(a))
+            .or_else(|| inserted_tabs.children.last().copied());
+        if let Some(active) = active {
+            tabs.active = Some(active);
+        }
+
+        true
+    }
+
     pub(super) fn insert_at(&mut self, insertion_point: InsertionPoint, inserted_id: TileId) {
         let InsertionPoint {
             parent_id,
@@ -294,14 +331,21 @@ impl<Pane> Tiles<Pane> {
             ContainerInsertion::Tabs(index) => {
                 if let Tile::Container(Container::Tabs(tabs)) = &mut parent_tile {
                     let index = index.min(tabs.children.len());
-                    tabs.children.insert(index, inserted_id);
-                    tabs.set_active(inserted_id);
+                    // ImGui parity: docking a tab stack (Tabs container) into another tab bar should
+                    // merge the contained windows, not create nested tab bars.
+                    if !self.merge_tabs_tile_into_tabs_container(tabs, index, inserted_id) {
+                        tabs.children.insert(index, inserted_id);
+                        tabs.set_active(inserted_id);
+                    }
                     self.tiles.insert(parent_id, parent_tile);
                 } else {
                     let new_tile_id = self.insert_new(parent_tile);
                     let mut tabs = Tabs::new(vec![new_tile_id]);
-                    tabs.children.insert(index.min(1), inserted_id);
-                    tabs.set_active(inserted_id);
+                    let index = index.min(1);
+                    if !self.merge_tabs_tile_into_tabs_container(&mut tabs, index, inserted_id) {
+                        tabs.children.insert(index, inserted_id);
+                        tabs.set_active(inserted_id);
+                    }
                     self.tiles
                         .insert(parent_id, Tile::Container(Container::Tabs(tabs)));
                 }
