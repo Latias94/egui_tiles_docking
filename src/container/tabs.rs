@@ -229,8 +229,16 @@ impl Tabs {
             behavior.on_edit(EditAction::TabSelected);
         }
 
+        let tab_bar_height = if behavior.auto_hide_tab_bar_when_single_tab()
+            && self.visible_children_count(tiles) <= 1
+        {
+            0.0
+        } else {
+            behavior.tab_bar_height(style)
+        };
+
         let mut active_rect = rect;
-        active_rect.min.y += behavior.tab_bar_height(style);
+        active_rect.min.y += tab_bar_height;
 
         if let Some(active) = self.active {
             // Only lay out the active tab (saves CPU):
@@ -265,7 +273,13 @@ impl Tabs {
         rect: Rect,
         tile_id: TileId,
     ) {
-        let next_active = self.tab_bar_ui(tree, behavior, ui, rect, drop_context, tile_id);
+        let show_tab_bar = !(behavior.auto_hide_tab_bar_when_single_tab()
+            && self.visible_children_count(&tree.tiles) <= 1);
+        let next_active = if show_tab_bar {
+            self.tab_bar_ui(tree, behavior, ui, rect, drop_context, tile_id)
+        } else {
+            self.next_active(&tree.tiles)
+        };
 
         if let Some(active) = self.active {
             tree.tile_ui(behavior, drop_context, ui, active);
@@ -274,6 +288,14 @@ impl Tabs {
 
         // We have only laid out the active tab, so we need to switch active tab _after_ the ui pass above:
         self.active = next_active;
+    }
+
+    fn visible_children_count<Pane>(&self, tiles: &Tiles<Pane>) -> usize {
+        self.children
+            .iter()
+            .copied()
+            .filter(|&child_id| tiles.get(child_id).is_some() && tiles.is_visible(child_id))
+            .count()
     }
 
     /// Returns the next active tab (e.g. the one clicked, or the current).
@@ -293,6 +315,27 @@ impl Tabs {
         let tab_bar_height = behavior.tab_bar_height(ui.style());
         let tab_bar_rect = rect.split_top_bottom_at_y(rect.top() + tab_bar_height).0;
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(tab_bar_rect));
+
+        // ImGui-like: dragging the empty tab-bar background drags the whole dock node.
+        // This is especially important when the dock node is hosted in its own native viewport,
+        // where we want window-move docking without adding an extra custom title bar widget.
+        //
+        // For ImGui parity, only leaf dock nodes are draggable via the tab-bar background:
+        // if the Tabs container is effectively hosting a split layout (children are containers),
+        // do not start a drag here (drag the child nodes' tab bars instead).
+        let bg_id = ui.id().with("tab_bar_bg_drag");
+        let bg_response = ui.interact(ui.max_rect(), bg_id, egui::Sense::click_and_drag());
+        if bg_response.drag_started() {
+            let visible_children_are_all_panes = self
+                .children
+                .iter()
+                .copied()
+                .filter(|&child| tree.tiles.get(child).is_some() && tree.tiles.is_visible(child))
+                .all(|child| matches!(tree.tiles.get(child), Some(crate::Tile::Pane(_))));
+            if visible_children_are_all_panes {
+                ui.ctx().set_dragged_id(tile_id.egui_id(tree.id()));
+            }
+        }
 
         let mut button_rects = ahash::HashMap::default();
         let mut dragged_index = None;

@@ -310,7 +310,21 @@ pub trait Behavior<Pane> {
 
     /// What are the rules for simplifying the tree?
     fn simplification_options(&self) -> SimplificationOptions {
-        SimplificationOptions::default()
+        // ImGui-like baseline: every leaf pane should live under a `Tabs` container so we always
+        // have a discoverable header/drag handle for each dock node (even when it contains a single
+        // window). Users can still override this in their own `Behavior` implementation.
+        SimplificationOptions {
+            all_panes_must_have_tabs: true,
+            ..SimplificationOptions::default()
+        }
+    }
+
+    /// If true, a tab bar may be hidden automatically when there is only one visible tab in a
+    /// dock node (ImGui: `ImGuiDockNodeFlags_AutoHideTabBar`).
+    ///
+    /// Default: `false` (ImGui-style baseline keeps the header visible for discoverability).
+    fn auto_hide_tab_bar_when_single_tab(&self) -> bool {
+        false
     }
 
     /// Add some custom painting on top of a tile (container or pane), e.g. draw an outline on top of it.
