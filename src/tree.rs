@@ -530,15 +530,35 @@ impl<Pane> Tree<Pane> {
             }
         };
 
+        // ImGui parity: docking targets are "dock nodes" (leaf tab stacks), not arbitrary containers.
+        //
+        // Restrict the hovered tile candidates to:
+        // - Tabs containers (preferred leaf unit)
+        // - Pane tiles only when they have no parent Tabs wrapper.
         for tile_id in self.active_tiles() {
             let Some(rect) = self.tiles.rect(tile_id) else {
                 continue;
             };
+            if !rect.contains(pointer_pos) {
+                continue;
+            }
             let Some(tile) = self.tiles.get(tile_id) else {
                 continue;
             };
 
             let kind = tile.kind();
+            let is_tabs = kind == Some(ContainerKind::Tabs);
+            let is_pane = matches!(tile, Tile::Pane(_));
+            if is_pane {
+                let has_parent_tabs = self.tiles.parent_of(tile_id).is_some_and(|p| {
+                    self.tiles.get(p).and_then(|t| t.kind()) == Some(ContainerKind::Tabs)
+                });
+                if has_parent_tabs {
+                    continue;
+                }
+            } else if !is_tabs {
+                continue;
+            }
 
             let tab_y = (rect.top() + tab_bar_height).at_most(rect.bottom());
             let (tab_bar_rect, content_rect) = rect.split_top_bottom_at_y(tab_y);
@@ -592,7 +612,7 @@ impl<Pane> Tree<Pane> {
                 }
             }
 
-            // --- Generic suggestions (same as `DropContext::on_tile`):
+            // --- Generic suggestions:
             if kind != Some(ContainerKind::Horizontal) {
                 let (left, right) = rect.split_left_right_at_fraction(0.5);
                 suggest(
@@ -624,6 +644,7 @@ impl<Pane> Tree<Pane> {
                     tab_bar_rect,
                 );
             }
+            // ImGui-like: dropping onto the content area docks as a tab into this leaf node.
             suggest(
                 InsertionPoint::new(tile_id, ContainerInsertion::Tabs(usize::MAX)),
                 content_rect,
@@ -1413,5 +1434,47 @@ mod dock_zone_tab_insertion_tests {
             zone_right.insertion_point,
             InsertionPoint::new(root, ContainerInsertion::Tabs(3))
         );
+    }
+
+    #[test]
+    fn dock_zone_at_prefers_leaf_tabs_over_split_containers() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(());
+        let a_tabs = tiles.insert_tab_tile(vec![a]);
+        let b = tiles.insert_pane(());
+        let b_tabs = tiles.insert_tab_tile(vec![b]);
+        let root = tiles.insert_vertical_tile(vec![a_tabs, b_tabs]);
+
+        let mut tree = Tree::new("test_tree_split", root, tiles);
+
+        let style = egui::Style::default();
+        let behavior = TestBehavior;
+        let tab_bar_h = behavior.tab_bar_height(&style);
+
+        let root_rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 400.0));
+        let (top, bottom) = root_rect.split_top_bottom_at_fraction(0.5);
+        tree.tiles.rects.insert(root, root_rect);
+        tree.tiles.rects.insert(a_tabs, top);
+        tree.tiles.rects.insert(b_tabs, bottom);
+
+        tree.tiles.rects.insert(
+            a,
+            Rect::from_min_max(
+                egui::pos2(top.left(), top.top() + tab_bar_h),
+                top.right_bottom(),
+            ),
+        );
+        tree.tiles.rects.insert(
+            b,
+            Rect::from_min_max(
+                egui::pos2(bottom.left(), bottom.top() + tab_bar_h),
+                bottom.right_bottom(),
+            ),
+        );
+
+        let pointer = egui::pos2(top.center().x, top.center().y.max(top.top() + tab_bar_h + 10.0));
+        let zone = tree.dock_zone_at(&behavior, &style, pointer).unwrap();
+        assert_eq!(zone.insertion_point.parent_id, a_tabs);
+        assert_eq!(zone.insertion_point.insertion.kind(), ContainerKind::Tabs);
     }
 }

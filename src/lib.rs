@@ -387,11 +387,20 @@ impl DropContext {
             );
         }
 
-        self.suggest_rect(
-            InsertionPoint::new(parent_id, ContainerInsertion::Tabs(usize::MAX)),
-            rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style))
-                .1,
-        );
+        // ImGui parity: "dock as tab" targets a leaf node (tabs stack), not an arbitrary container.
+        //
+        // We only offer the Tabs suggestion for:
+        // - existing Tabs containers, or
+        // - Pane tiles (when there is no Tabs wrapper).
+        let is_tabs = tile.kind() == Some(ContainerKind::Tabs);
+        let is_pane = matches!(tile, Tile::Pane(_));
+        if is_tabs || is_pane {
+            self.suggest_rect(
+                InsertionPoint::new(parent_id, ContainerInsertion::Tabs(usize::MAX)),
+                rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style))
+                    .1,
+            );
+        }
     }
 
     fn suggest_rect(&mut self, insertion: InsertionPoint, preview_rect: Rect) {
