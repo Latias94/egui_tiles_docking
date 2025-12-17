@@ -316,27 +316,6 @@ impl Tabs {
         let tab_bar_rect = rect.split_top_bottom_at_y(rect.top() + tab_bar_height).0;
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(tab_bar_rect));
 
-        // ImGui-like: dragging the empty tab-bar background drags the whole dock node.
-        // This is especially important when the dock node is hosted in its own native viewport,
-        // where we want window-move docking without adding an extra custom title bar widget.
-        //
-        // For ImGui parity, only leaf dock nodes are draggable via the tab-bar background:
-        // if the Tabs container is effectively hosting a split layout (children are containers),
-        // do not start a drag here (drag the child nodes' tab bars instead).
-        let bg_id = ui.id().with("tab_bar_bg_drag");
-        let bg_response = ui.interact(ui.max_rect(), bg_id, egui::Sense::click_and_drag());
-        if bg_response.drag_started() {
-            let visible_children_are_all_panes = self
-                .children
-                .iter()
-                .copied()
-                .filter(|&child| tree.tiles.get(child).is_some() && tree.tiles.is_visible(child))
-                .all(|child| matches!(tree.tiles.get(child), Some(crate::Tile::Pane(_))));
-            if visible_children_are_all_panes {
-                ui.ctx().set_dragged_id(tile_id.egui_id(tree.id()));
-            }
-        }
-
         let mut button_rects = ahash::HashMap::default();
         let mut dragged_index = None;
 
@@ -382,18 +361,6 @@ impl Tabs {
 
                     let mut hovered_tab_during_drag: Option<TileId> = None;
                     let output = scroll_area.show(ui, |ui| {
-                        // Make the background behind the buttons draggable (to drag the parent container tile).
-                        // We also sense clicks to avoid eager-dragging on mouse-down.
-                        let sense = egui::Sense::click_and_drag();
-                        if ui
-                            .interact(ui.max_rect(), ui.id().with("background"), sense)
-                            .on_hover_cursor(egui::CursorIcon::Grab)
-                            .drag_started()
-                        {
-                            behavior.on_edit(EditAction::TileDragged);
-                            ui.ctx().set_dragged_id(tile_id.egui_id(tree.id));
-                        }
-
                         ui.spacing_mut().item_spacing.x = 0.0; // Tabs have spacing built-in
 
                         for (i, &child_id) in self.children.iter().enumerate() {
@@ -448,6 +415,57 @@ impl Tabs {
                     scroll_state.offset = output.state.offset.x;
                     scroll_state.content_size = output.content_size;
                     scroll_state.available = output.inner_rect.size();
+
+                    // ImGui-like: dragging empty background space in the tab bar drags the whole dock node.
+                    //
+                    // IMPORTANT: do not overlap this draggable region with the actual tab buttons, otherwise
+                    // it will steal drags and prevent per-tab dragging (which is required to re-dock a tab
+                    // from a detached viewport back into another dock tree).
+                    let visible_children_are_all_panes = self
+                        .children
+                        .iter()
+                        .copied()
+                        .filter(|&child| tree.tiles.get(child).is_some() && tree.tiles.is_visible(child))
+                        .all(|child| matches!(tree.tiles.get(child), Some(Tile::Pane(_))));
+
+                    if visible_children_are_all_panes {
+                        let inner_rect = output.inner_rect;
+                        let (min_x, max_x) = button_rects.values().fold(
+                            (inner_rect.max.x, inner_rect.min.x),
+                            |(min_x, max_x), rect| (min_x.min(rect.min.x), max_x.max(rect.max.x)),
+                        );
+
+                        let mut bg_rects = Vec::new();
+                        if button_rects.is_empty() {
+                            bg_rects.push(inner_rect);
+                        } else {
+                            let left_max_x = min_x.clamp(inner_rect.min.x, inner_rect.max.x);
+                            let right_min_x = max_x.clamp(inner_rect.min.x, inner_rect.max.x);
+                            if left_max_x > inner_rect.min.x {
+                                bg_rects.push(Rect::from_min_max(
+                                    inner_rect.min,
+                                    egui::pos2(left_max_x, inner_rect.max.y),
+                                ));
+                            }
+                            if right_min_x < inner_rect.max.x {
+                                bg_rects.push(Rect::from_min_max(
+                                    egui::pos2(right_min_x, inner_rect.min.y),
+                                    inner_rect.max,
+                                ));
+                            }
+                        }
+
+                        for (i, bg_rect) in bg_rects.into_iter().enumerate() {
+                            let bg_id = ui.id().with(("tab_bar_bg_drag", i));
+                            let response = ui
+                                .interact(bg_rect, bg_id, egui::Sense::click_and_drag())
+                                .on_hover_cursor(egui::CursorIcon::Grab);
+                            if response.drag_started() {
+                                behavior.on_edit(EditAction::TileDragged);
+                                ui.ctx().set_dragged_id(tile_id.egui_id(tree.id));
+                            }
+                        }
+                    }
 
                     // ImGui-like: during an active drag, only auto-select a tab after a short hover delay.
                     let dt = ui.input(|i| i.stable_dt).min(0.1);
