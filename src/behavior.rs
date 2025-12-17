@@ -199,7 +199,8 @@ pub trait Behavior<Pane> {
                 && tab_response.clicked_by(egui::PointerButton::Middle);
 
             if show_close_btn {
-                let close_btn_rect = close_btn_rect.expect("close rect set when close button is shown");
+                let close_btn_rect =
+                    close_btn_rect.expect("close rect set when close button is shown");
 
                 // Allocate: must be stable and unique per tab, otherwise clicks may go to the wrong tab.
                 let close_btn_id = id.with("tab_close_btn");
@@ -279,6 +280,22 @@ pub trait Behavior<Pane> {
     ) {
         // if ui.button("➕").clicked() {
         // }
+    }
+
+    /// Adds some UI to the top left of each tab bar.
+    ///
+    /// The widgets will be added left-to-right.
+    ///
+    /// `_scroll_offset` is a mutable reference to the tab scroll value.
+    /// Adding to this value will scroll the tabs to the right, subtracting to the left.
+    fn top_bar_left_ui(
+        &mut self,
+        _tiles: &Tiles<Pane>,
+        _ui: &mut Ui,
+        _tile_id: TileId,
+        _tabs: &crate::Tabs,
+        _scroll_offset: &mut f32,
+    ) {
     }
 
     /// The height of the bar holding tab titles.

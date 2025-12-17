@@ -324,19 +324,47 @@ impl Tabs {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, behavior.tab_bar_color(ui.visuals()));
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let scroll_state_id = ui.make_persistent_id(tile_id);
-            let drag_hover_switch_id = scroll_state_id.with("drag_hover_switch");
-            let mut scroll_state = ui.ctx().memory_mut(|m| {
-                m.data
-                    .get_temp::<ScrollState>(scroll_state_id)
-                    .unwrap_or_default()
+        let scroll_state_id = ui.make_persistent_id(tile_id);
+        let drag_hover_switch_id = scroll_state_id.with("drag_hover_switch");
+        let mut scroll_state = ui.ctx().memory_mut(|m| {
+            m.data
+                .get_temp::<ScrollState>(scroll_state_id)
+                .unwrap_or_default()
+        });
+
+        // Left-side top-bar UI (left-to-right).
+        let left_used = {
+            let mut left_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(tab_bar_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            left_ui.push_id("tab_bar_left", |ui| {
+                behavior.top_bar_left_ui(&tree.tiles, ui, tile_id, self, &mut scroll_state.offset);
             });
+            (left_ui.cursor().min.x - tab_bar_rect.min.x).at_least(0.0)
+        };
 
-            // Allow user to add buttons such as "add new tab".
-            // They can also read and modify the scroll state if they want.
-            behavior.top_bar_right_ui(&tree.tiles, ui, tile_id, self, &mut scroll_state.offset);
+        // Right-side top-bar UI (right-to-left).
+        let right_used = {
+            let mut right_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(tab_bar_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            right_ui.push_id("tab_bar_right", |ui| {
+                behavior.top_bar_right_ui(&tree.tiles, ui, tile_id, self, &mut scroll_state.offset);
+            });
+            (tab_bar_rect.max.x - right_ui.cursor().max.x).at_least(0.0)
+        };
 
+        // Center area: tabs + scroll arrows.
+        let mut center_rect = tab_bar_rect;
+        center_rect.min.x = (center_rect.min.x + left_used).min(center_rect.max.x);
+        center_rect.max.x = (center_rect.max.x - right_used).max(center_rect.min.x);
+
+        let mut center_ui = ui.new_child(egui::UiBuilder::new().max_rect(center_rect));
+        center_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let scroll_area_width = scroll_state.update(ui);
 
             // We're in a right-to-left layout, so start with the right scroll-arrow:
@@ -499,10 +527,10 @@ impl Tabs {
                         .data_mut(|d| d.insert_temp(drag_hover_switch_id, hover_switch));
                 },
             );
-
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(scroll_state_id, scroll_state));
         });
+
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(scroll_state_id, scroll_state));
 
         if let Some(tile_id) = close_requested {
             if behavior.on_tab_close(&mut tree.tiles, tile_id) {
