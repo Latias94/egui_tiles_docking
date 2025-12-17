@@ -130,6 +130,34 @@ pub use tree::Tree;
 
 // ----------------------------------------------------------------------------
 
+/// Temp id used to signal "double click on a Tabs container's tab-bar background" in the current frame.
+///
+/// This is primarily useful for integrations that treat the tab bar as a window title bar (e.g. borderless
+/// multi-viewport hosts) and want to toggle native window maximization on double click.
+pub fn tab_bar_background_double_clicked_id(tree_id: egui::Id, tabs_tile_id: TileId) -> egui::Id {
+    egui::Id::new((
+        tree_id,
+        tabs_tile_id,
+        "egui_tiles_tab_bar_bg_double_clicked",
+    ))
+}
+
+/// Returns true if the tab-bar background of the given `Tabs` tile was double-clicked this frame.
+///
+/// The flag is stored in egui temp memory and is cleared when read.
+pub fn take_tab_bar_background_double_clicked(
+    ctx: &egui::Context,
+    tree_id: egui::Id,
+    tabs_tile_id: TileId,
+) -> bool {
+    let id = tab_bar_background_double_clicked_id(tree_id, tabs_tile_id);
+    let clicked = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if clicked {
+        ctx.data_mut(|d| d.insert_temp(id, false));
+    }
+    clicked
+}
+
 /// The response from [`Behavior::pane_ui`] for a pane.
 #[must_use]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

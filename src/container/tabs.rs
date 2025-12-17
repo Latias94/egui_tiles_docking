@@ -249,7 +249,9 @@ impl Tabs {
     pub fn next_active<Pane>(&self, tiles: &Tiles<Pane>) -> Option<TileId> {
         self.active
             .filter(|active| {
-                self.children.contains(active) && tiles.get(*active).is_some() && tiles.is_visible(*active)
+                self.children.contains(active)
+                    && tiles.get(*active).is_some()
+                    && tiles.is_visible(*active)
             })
             .or_else(|| {
                 self.children
@@ -425,7 +427,9 @@ impl Tabs {
                         .children
                         .iter()
                         .copied()
-                        .filter(|&child| tree.tiles.get(child).is_some() && tree.tiles.is_visible(child))
+                        .filter(|&child| {
+                            tree.tiles.get(child).is_some() && tree.tiles.is_visible(child)
+                        })
                         .all(|child| matches!(tree.tiles.get(child), Some(Tile::Pane(_))));
 
                     if visible_children_are_all_panes {
@@ -463,6 +467,11 @@ impl Tabs {
                             if response.drag_started() {
                                 behavior.on_edit(EditAction::TileDragged);
                                 ui.ctx().set_dragged_id(tile_id.egui_id(tree.id));
+                            }
+                            if response.double_clicked() {
+                                let id =
+                                    crate::tab_bar_background_double_clicked_id(tree.id, tile_id);
+                                ui.ctx().data_mut(|d| d.insert_temp(id, true));
                             }
                         }
                     }
