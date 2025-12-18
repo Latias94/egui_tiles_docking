@@ -451,56 +451,48 @@ impl Tabs {
                     // IMPORTANT: do not overlap this draggable region with the actual tab buttons, otherwise
                     // it will steal drags and prevent per-tab dragging (which is required to re-dock a tab
                     // from a detached viewport back into another dock tree).
-                    let visible_children_are_all_panes = self
-                        .children
-                        .iter()
-                        .copied()
-                        .filter(|&child| {
-                            tree.tiles.get(child).is_some() && tree.tiles.is_visible(child)
-                        })
-                        .all(|child| matches!(tree.tiles.get(child), Some(Tile::Pane(_))));
+                    //
+                    // Note: this should work regardless of whether tabs contain panes or containers. In ImGui,
+                    // a dock node title/tab bar remains the window-move handle even for split subtrees.
+                    let inner_rect = output.inner_rect;
+                    let (min_x, max_x) = button_rects.values().fold(
+                        (inner_rect.max.x, inner_rect.min.x),
+                        |(min_x, max_x), rect| (min_x.min(rect.min.x), max_x.max(rect.max.x)),
+                    );
 
-                    if visible_children_are_all_panes {
-                        let inner_rect = output.inner_rect;
-                        let (min_x, max_x) = button_rects.values().fold(
-                            (inner_rect.max.x, inner_rect.min.x),
-                            |(min_x, max_x), rect| (min_x.min(rect.min.x), max_x.max(rect.max.x)),
-                        );
-
-                        let mut bg_rects = Vec::new();
-                        if button_rects.is_empty() {
-                            bg_rects.push(inner_rect);
-                        } else {
-                            let left_max_x = min_x.clamp(inner_rect.min.x, inner_rect.max.x);
-                            let right_min_x = max_x.clamp(inner_rect.min.x, inner_rect.max.x);
-                            if left_max_x > inner_rect.min.x {
-                                bg_rects.push(Rect::from_min_max(
-                                    inner_rect.min,
-                                    egui::pos2(left_max_x, inner_rect.max.y),
-                                ));
-                            }
-                            if right_min_x < inner_rect.max.x {
-                                bg_rects.push(Rect::from_min_max(
-                                    egui::pos2(right_min_x, inner_rect.min.y),
-                                    inner_rect.max,
-                                ));
-                            }
+                    let mut bg_rects = Vec::new();
+                    if button_rects.is_empty() {
+                        bg_rects.push(inner_rect);
+                    } else {
+                        let left_max_x = min_x.clamp(inner_rect.min.x, inner_rect.max.x);
+                        let right_min_x = max_x.clamp(inner_rect.min.x, inner_rect.max.x);
+                        if left_max_x > inner_rect.min.x {
+                            bg_rects.push(Rect::from_min_max(
+                                inner_rect.min,
+                                egui::pos2(left_max_x, inner_rect.max.y),
+                            ));
                         }
+                        if right_min_x < inner_rect.max.x {
+                            bg_rects.push(Rect::from_min_max(
+                                egui::pos2(right_min_x, inner_rect.min.y),
+                                inner_rect.max,
+                            ));
+                        }
+                    }
 
-                        for (i, bg_rect) in bg_rects.into_iter().enumerate() {
-                            let bg_id = ui.id().with(("tab_bar_bg_drag", i));
-                            let response = ui
-                                .interact(bg_rect, bg_id, egui::Sense::click_and_drag())
-                                .on_hover_cursor(egui::CursorIcon::Grab);
-                            if response.drag_started() {
-                                behavior.on_edit(EditAction::TileDragged);
-                                ui.ctx().set_dragged_id(tile_id.egui_id(tree.id));
-                            }
-                            if response.double_clicked() {
-                                let id =
-                                    crate::tab_bar_background_double_clicked_id(tree.id, tile_id);
-                                ui.ctx().data_mut(|d| d.insert_temp(id, true));
-                            }
+                    for (i, bg_rect) in bg_rects.into_iter().enumerate() {
+                        let bg_id = ui.id().with(("tab_bar_bg_drag", i));
+                        let response = ui
+                            .interact(bg_rect, bg_id, egui::Sense::click_and_drag())
+                            .on_hover_cursor(egui::CursorIcon::Grab);
+                        if response.drag_started() {
+                            behavior.on_edit(EditAction::TileDragged);
+                            ui.ctx().set_dragged_id(tile_id.egui_id(tree.id));
+                        }
+                        if response.double_clicked() {
+                            let id =
+                                crate::tab_bar_background_double_clicked_id(tree.id, tile_id);
+                            ui.ctx().data_mut(|d| d.insert_temp(id, true));
                         }
                     }
 
